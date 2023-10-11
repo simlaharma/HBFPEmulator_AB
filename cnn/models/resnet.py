@@ -1,4 +1,4 @@
-# Copyright (c) 2021, Parallel Systems Architecture Laboratory (PARSA), EPFL & 
+# Copyright (c) 2021, Parallel Systems Architecture Laboratory (PARSA), EPFL &
 # Machine Learning and Optimization Laboratory (MLO), EPFL. All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -261,10 +261,32 @@ class ResNet_cifar(ResNetBase):
 
         # define layers.
         self.inplanes = 16
+        orig_num_format = self.bfp_args['num_format']
+        orig_mant= self.bfp_args['mant_bits']
+
+        
+        '''
+        if self.bfp_args['layer_mant'] != 0:
+            print('..............................................in if')
+            self.bfp_args['num_format'] = 'fp32'
+        '''
+        if self.bfp_args['layer_mant'] != 0:
+            self.bfp_args['mant_bits']= self.bfp_args['layer_mant']
+            self.bfp_args['mixed_tile']=1
+        #print('--------------------in resnet')
+        #print(self.bfp_args['bfp_tile_size'])
         self.conv1 = BFPConv2d(
             in_channels=3, out_channels=16,
             kernel_size=3, stride=1, padding=1, bias=False,
             **self.bfp_args)
+        
+        self.bfp_args['mant_bits'] = orig_mant
+        self.bfp_args['mixed_tile']=0
+        
+        
+        if self.bfp_args['layer_mant'] != 0:
+            self.bfp_args['num_format'] = orig_num_format
+        
         self.bn1 = nn.BatchNorm2d(num_features=16)
         self.relu = nn.ReLU(inplace=True)
 
@@ -276,14 +298,31 @@ class ResNet_cifar(ResNetBase):
             block_fn=block_fn, planes=64, block_num=block_nums, stride=2)
 
         self.avgpool = nn.AvgPool2d(kernel_size=8)
+        
+        
+        '''
+        if self.bfp_args['layer_mant'] != 0:
+            self.bfp_args['num_format'] = 'fp32'
+        '''
+        if self.bfp_args['layer_mant'] != 0:
+            self.bfp_args['mant_bits']= self.bfp_args['layer_mant']
+            self.bfp_args['mixed_tile']=1
+
         self.fc = BFPLinear(
             in_features=64 * block_fn.expansion, out_features=num_classes,
             **self.bfp_args)
+        
+        self.bfp_args['mant_bits'] = orig_mant
+        self.bfp_args['mixed_tile']=0
+
+        if self.bfp_args['layer_mant'] != 0:
+            self.bfp_args['num_format'] = orig_num_format
 
         # weight initialization based on layer type.
         self._weight_initialization()
 
     def forward(self, x):
+        #'-------------------forward-----------------'
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)

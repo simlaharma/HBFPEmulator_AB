@@ -28,7 +28,8 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import torch
-from bfp.bfp_ops import float_to_bfp_tiled, unpack_bfp_args
+#from bfp.bfp_ops import float_to_bfp_tiled, unpack_bfp_args
+from bfp_ops0 import float_to_bfp_blocked, unpack_bfp_args
 
 required=object()
 
@@ -157,7 +158,7 @@ class BFPSGD(torch.optim.SGD):
                 if self.bfp_args['num_format'] == 'fp32':
                     p.data.add_(d_p, alpha=-group['lr'])
                 elif self.bfp_args['num_format'] == 'bfp':
-                    updated_value = float_to_bfp_tiled(p.data.add_(d_p, alpha=-group['lr']), **self.bfp_args)
+                    updated_value = float_to_bfp_blocked(p.data.add_(d_p, alpha=-group['lr']), **self.bfp_args)
 
                     p.data.copy_(updated_value.data)
                 else:

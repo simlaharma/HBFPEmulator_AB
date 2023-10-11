@@ -28,7 +28,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import torch
-from .bfp_ops import float_to_bfp_tiled, unpack_bfp_args
+from .bfp_ops import float_to_bfp_tiled, unpack_bfp_args, float_to_bfp_blocked
 
 _bfp_optims = {}
 def _gen_bfp_optim(optim, name):
@@ -75,8 +75,10 @@ def _gen_bfp_optim(optim, name):
                         state['shadow_p'] = torch.zeros_like(p.data)
 
                     shadow_p = state['shadow_p']
-                    shadow_p.copy_(float_to_bfp_tiled(p.data, sgd_update=True, **self.bfp_args))
-                    p.data.copy_(float_to_bfp_tiled(p.data, **self.bfp_args))
+                    #shadow_p.copy_(float_to_bfp_tiled(p.data, sgd_update=True, **self.bfp_args))
+                    shadow_p.copy_(float_to_bfp_blocked(p.data, sgd_update=True, **self.bfp_args))
+                    #p.data.copy_(float_to_bfp_tiled(p.data, **self.bfp_args))
+                    p.data.copy_(float_to_bfp_blocked(p.data, **self.bfp_args))
 
             return loss
 

@@ -1,0 +1,11 @@
+hbfp:
+  num_format: bfp
+  rounding_mode: stoc
+  epsilon: 0.00000001
+  mant_bits: 3
+  weight_mant_bits: 15
+  bfp_tile_size: 32
+  device: cpu
+  mixed_precision: 23,25
+  mixed_tile: 0
+  layer_mant: 0

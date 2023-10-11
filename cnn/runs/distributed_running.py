@@ -1,4 +1,4 @@
-# Copyright (c) 2021, Parallel Systems Architecture Laboratory (PARSA), EPFL & 
+# Copyright (c) 2021, Parallel Systems Architecture Laboratory (PARSA), EPFL &
 # Machine Learning and Optimization Laboratory (MLO), EPFL. All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -43,6 +43,18 @@ from cnn.utils.meter import AverageMeter, accuracy, save_checkpoint, \
     define_local_tracker
 from cnn.utils.lr import adjust_learning_rate
 
+import random
+import numpy as np
+import os
+
+def same_seeds(seed):
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
+    np.random.seed(seed)  # Numpy module.
+    random.seed(seed)  # Python random module.
 
 def load_data(args, input, target, tracker):
     """Load a mini-batch and record the loading time."""
@@ -93,6 +105,8 @@ def inference(model, criterion, input_var, target_var, target):
 
 
 def train_and_validate(args, model, criterion, optimizer):
+    global current_epoch
+    same_seeds(args.manual_seed)
     """The training scheme of Hierarchical Local SGD."""
     # get data loader.
     train_loader, val_loader = create_dataset(args)
@@ -117,6 +131,8 @@ def train_and_validate(args, model, criterion, optimizer):
 
     for epoch in range(args.start_epoch, args.num_epochs + 1):
         args.epoch = epoch
+        current_epoch = epoch
+        #print(f'current epoch {current_epoch}')
 
         # train
         do_training(args, train_loader, model, optimizer, criterion)
@@ -132,6 +148,20 @@ def train_and_validate(args, model, criterion, optimizer):
             log('reshuffle the dataset.')
             train_loader, val_loader = create_dataset(args)
 
+from numpy import save
+from pathlib import Path
+import sys
+
+class Hook():
+    def __init__(self, module, backward=False):
+        if backward==False:
+            self.hook = module.register_forward_hook(self.hook_fn)
+    def hook_fn(self, module, input, output):
+        self.input = input
+        self.output = output
+        self.module = module
+    def close(self):
+        self.hook.remove()
 
 def do_training(args, train_loader, model, optimizer, criterion):
     # switch to train mode
@@ -140,6 +170,20 @@ def do_training(args, train_loader, model, optimizer, criterion):
     tracker['start_load_time'] = time.time()
 
     for iter, (input, target) in enumerate(train_loader):
+        '''
+        #SAVE TENSORS
+        if (iter % 196) == 0:
+            names = []
+            _layers = []
+            def remove_sequential2(network):
+                for name, layer in model.named_modules():
+                    if list(layer.children()) == []: # if leaf node, add it to list
+                        names.append(name)
+                        _layers.append(layer)
+            remove_sequential2(model)
+            hookF = [Hook(layer) for layer in _layers]
+        '''
+        
         # update local step.
         logging_load(args, tracker)
         args.local_index += 1
@@ -152,19 +196,51 @@ def do_training(args, train_loader, model, optimizer, criterion):
         input, target, input_var, target_var = load_data(
             args, input, target, tracker)
 
+        #print('---------------------forward------')
         # inference and get current performance.
         loss, prec1, prec5 = inference(
             model, criterion, input_var, target_var, target)
 
+        #print('--------------------backward------')
         # compute gradient and do local SGD step.
         optimizer.zero_grad()
         loss.backward()
+        
+        '''
+        #SAVE TENSORS
+        if (args.local_index % 196) == 1 and (args.cur_rank == 0):
+            #dirname = '/parsadata1/mixedprecision_hbfp/fp32distr/'+ str(args.local_index)
+            dirname = '/home/parsa/simla/mixedprecision_hbfp/accuracybooster_tensors/hbfp4/'+str(args.mixed_precision)+'_'+str(args.mixed_tile)+'_'+str(args.mant_bits)+ '/'+ str(args.local_index)
+            Path(dirname).mkdir(parents=True, exist_ok=True)
 
+            input_dist = {}
+            output_dist = {}
+            grad_dist = {}
+            weight_dist = {}
+
+            params = list(model.named_parameters())
+            for i in range(len(params)):
+                param_name = params[i][0]
+                if params[i][1].requires_grad and ('weight' in param_name):
+                    weight_dist[param_name] = params[i][1]
+                    grad_dist[param_name] = params[i][1].grad
+                    save(dirname + '/' + param_name + '_weight.npy', params[i][1].cpu().detach().numpy())
+                    save(dirname + '/' + param_name + '_grad.npy', params[i][1].grad.cpu().detach().numpy())
+
+            for n,h in zip(names,hookF):
+                input_dist[n] = h.input
+                output_dist[n] = h.output
+                save(dirname + '/' + n + '_input.npy', h.input[0].cpu().detach().numpy())
+                save(dirname + '/' + n + '_output.npy', h.output[0].cpu().detach().numpy())
+        '''
+        
+        
         # logging locally.
         logging_computing(args, tracker, loss, prec1, prec5, input)
 
         # sync and apply gradients.
         aggregate_gradients(args, model, optimizer)
+        #print('-------------------optimizer------')
         optimizer.step(apply_lr=True, apply_momentum=True)
 
         # logging display.
@@ -175,6 +251,7 @@ def do_training(args, train_loader, model, optimizer, criterion):
         # torch.cuda.empty_cache()
         # del input, input_var, target, target_var, loss, prec1, prec5
         # gc.collect()
+        
 
 
 def do_validate(args, val_loader, model, optimizer, criterion, save=True):
@@ -192,6 +269,10 @@ def do_validate(args, val_loader, model, optimizer, criterion, save=True):
         args.cur_rank, args.local_index,
         args.best_epoch[-1] if len(args.best_epoch) != 0 else '',
         args.epoch, args.best_prec1))
+
+    if False:
+        best = int(args.best_epoch[-1]) if len(args.best_epoch) != 0 else 0
+        #if int(args.epoch)-best > 10:
 
     if save and args.cur_rank == 0:
         save_checkpoint(

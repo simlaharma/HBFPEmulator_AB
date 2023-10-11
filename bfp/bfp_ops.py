@@ -36,6 +36,9 @@ import itertools as it
 import logging
 import unittest
 
+#import bfp_utils as tracking
+import cnn.runs.distributed_running as tracking
+
 class rounding_modes:
     """
     When converting fp32 tensors to bfp, the rounding mode can be chosen.
@@ -51,11 +54,20 @@ def round_tensor(t, mode, device):
     Perform the rounding of the tensor t by using selected mode
     """
     if mode == rounding_modes.STOC:
+        '''
         if device == "cpu":
             sampled = torch.FloatTensor(t.size(), device = device).uniform_(-0.5, 0.5)
         else:
             sampled = torch.cuda.FloatTensor(t.size()).uniform_(-0.5, 0.5)
         return sampled.add_(t).round()
+        '''
+        prob = t - t.floor()
+        if device == "cpu":
+            sampled = torch.FloatTensor(t.size(), device=device).uniform_(0, 1.0)
+        else:
+            sampled = torch.cuda.FloatTensor(t.size()).uniform_(0, 1.0)
+        t = torch.where(sampled < prob, t.ceil(), t.floor())
+        return t
     elif mode == rounding_modes.DETERM:
         return t.round()
     else:
@@ -78,6 +90,10 @@ def _float_to_bfp(t, mant_bits, epsilon, rounding_mode, device, exp_given=None):
     Convert float tensor t to bfp
     """
     exp = get_exponent(t, epsilon)
+    #torch.set_#print\options(threshold=500000)
+    #print\(f't: {t.shape}, exp:{exp.shape}')
+    #print\(f'tensot t: {t}')
+    #print\(f'exp: {exp}')
 
     #The interval between two consecutive numbers with that exponent value
     interval = torch.pow(2.0, exp-mant_bits)
@@ -94,11 +110,17 @@ def _float_to_bfp(t, mant_bits, epsilon, rounding_mode, device, exp_given=None):
 
 
 def float_to_bfp_batched(t, mant_bits, epsilon, rounding_mode, device, bfp_tile_size=25,
-                         num_format='', weight_mant_bits=''):
+                         num_format='', weight_mant_bits='',mixed_precision='-1,-1', mixed_tile=0, layer_mant=0):
     """
     Convert a batch of fp32 tensor t to bfp
     """
     assert num_format == 'bfp'
+
+    intervals=mixed_precision.split(',')
+    for i in range(int(len(intervals)/2)):
+        if int(intervals[int(2*i)])<=int(tracking.current_epoch)<int(intervals[int(2*i)+1]):
+            mant_bits = 3
+
     orig_shape = t.size()
 
     t = t.view(t.size()[0], -1)
@@ -151,17 +173,73 @@ def tiled_to_tensor(t, orig_shape, bfp_tile_size,
     return t.narrow(0, 0, matrix_h).narrow(1, 0, matrix_w).view(orig_shape)
 
 
-def float_to_bfp_tiled(t, mant_bits, epsilon, rounding_mode, device, bfp_tile_size=25,
-                       num_format='', weight_mant_bits=0,
+def float_to_bfp_blocked(t, mant_bits, epsilon, rounding_mode, device, bfp_tile_size=25,
+                       num_format='', weight_mant_bits=0, mixed_precision='-1,-1', mixed_tile=0, layer_mant=0,
                        sgd_update=False, mant_bits_pow=None):
+    """
+    Convert fp32 tensor t to bfp with tiling.
+    Used for weights (which are handled in the optimizer)
+    """
+    
+    assert num_format == 'bfp'
+
+    intervals=mixed_precision.split(',')
+    for i in range(int(len(intervals)/2)):
+        if (mixed_tile==1) or (int(intervals[int(2*i)])<int(tracking.current_epoch)<=int(intervals[int(2*i)+1])):
+            #print('...................................')
+            mant_bits = 5
+
+    if sgd_update:
+        mant_bits = weight_mant_bits
+
+    #print(f'in bfp: {mant_bits} tile- {bfp_tile_size}')
+    orig_shape = t.shape
+    #block_size = bfp_tile_size**2
+    block_size = bfp_tile_size
+    if block_size == 0:
+        return _float_to_bfp(t.view(1, -1), mant_bits, epsilon, rounding_mode, device).view(orig_shape)
+
+    padded_shape = list(orig_shape)
+
+    if orig_shape[-1] % block_size != 0:
+        pad_size = block_size - (orig_shape[-1] % block_size)
+        t = F.pad(t, (0,pad_size),'constant')
+        padded_shape[-1] = orig_shape[-1]+pad_size
+
+    t = t.contiguous().view(-1,block_size)
+
+    t = _float_to_bfp(t, mant_bits, epsilon, rounding_mode, device)
+
+    t = t.contiguous().view(padded_shape)
+
+    return t.narrow(-1,0,orig_shape[-1])
+
+
+def float_to_bfp_tiled(t, mant_bits, epsilon, rounding_mode, device, bfp_tile_size=25,
+                       num_format='', weight_mant_bits=0, mixed_precision='-1,-1', mixed_tile=0, layer_mant=0,
+                       sgd_update=False, mant_bits_pow=None,backward=False):
     """
     Convert fp32 tensor t to bfp with tiling.
 
     Used for weights (which are handled in the optimizer)
     """
+    #print(f'in bfp tracking: {tracking.current_epoch}, mixed_tile: {mixed_tile}')
+
+    intervals=mixed_precision.split(',')
+    for i in range(int(len(intervals)/2)):
+        if (mixed_tile==1) or (int(intervals[int(2*i)])<int(tracking.current_epoch)<=int(intervals[int(2*i)+1])):
+            #print('...................................')
+            mant_bits = 5
+    #print(f'in bfp: {mant_bits} tile- {bfp_tile_size}')
+       
+    #if 20<int(tracking.current_epoch)<80 or 100<int(tracking.current_epoch)<150:
+    #    mant_bits = 3
+
+    ###print\(f'in bfp: {mant_bits} tile- {bfp_tile_size}')
+
     assert num_format == 'bfp'
     if sgd_update:
-        mant_bits = weight_mant_bits
+        mant_bits = weight_mant_bits   
 
     orig_shape = t.size()
     if bfp_tile_size == 0:
@@ -211,7 +289,14 @@ def _gen_bfp_op(op, name, bfp_args):
     class NewOpIn(torch.autograd.Function):
         @staticmethod
         def forward(ctx, x, w):
-            return (float_to_bfp_tiled(x, **bfp_args), float_to_bfp_tiled(w, **bfp_args))
+            ###torch.set_printoptions(threshold=500000)
+            ##print\(f'shapes x: {x.shape}, w: {w.shape}')
+            #print(f'x: {x}')
+            #print(f'w: {w}')
+            #print(f'x_2bfp: {float_to_bfp_tiled(x, **bfp_args)}')
+            #print(f'w_2bfp: {float_to_bfp_tiled(w, **bfp_args)}')
+            ##return (float_to_bfp_tiled(x, **bfp_args), float_to_bfp_tiled(w, **bfp_args))
+            return (float_to_bfp_blocked(x, **bfp_args), float_to_bfp_blocked(w, **bfp_args))
 
         @staticmethod
         def backward(ctx, grad_x, grad_w):
@@ -227,7 +312,8 @@ def _gen_bfp_op(op, name, bfp_args):
 
         @staticmethod
         def backward(ctx, op_out_grad):
-            return float_to_bfp_tiled(op_out_grad, **bfp_args)
+            return float_to_bfp_blocked(op_out_grad, **bfp_args)
+            ##return float_to_bfp_tiled(op_out_grad, **bfp_args)
 
     NewOpOut.__name__ = name + '_Out'
     new_op_out = NewOpOut.apply
@@ -266,7 +352,10 @@ def unpack_bfp_args(kwargs):
                 ('mant_bits', 0),
                 ('bfp_tile_size', 0),
                 ('weight_mant_bits', 0),
-                ('device', 'cpu')]
+                ('device', 'cpu'),
+                ('mixed_precision', '-1,-1'),
+                ('mixed_tile', 0),
+                ('layer_mant', 0)]
 
     for arg, default in bfp_argn:
         if arg in kwargs:
@@ -309,6 +398,12 @@ class BFPConv2d(torch.nn.Conv2d):
                             self.padding, self.dilation, self.groups)
 
         elif self.num_format == 'bfp':
+            #print('---------------')
+            ##torch.set_printoptions(threshold=500000)
+            #print\(f'input.shape: {input.shape}')
+            #print\(f'self.weight.shape: {self.weight.shape}')
+            #print\(f'input {input}')
+            #print\(f'self.weight {self.weight}')
             conv = self.conv_op(input, self.weight, None, self.stride,
                                 self.padding, self.dilation, self.groups)
             if self.bias is not None:
@@ -408,7 +503,7 @@ class TestCases(unittest.TestCase):
                 b=_float_to_bfp(t, mant_bits, epsilon, rounding_mode, device)
                 for tensor_element in b.flatten().tolist():
                     self.assertIn(tensor_element, bfp_numbers, msg="{} is not representable in bfp with {} mantissa bits".format(tensor_element, mant_bits))
-                #print("...Generated tensor {} \nis representable in bfp with {} mantissa bits as \n{}".format(t, mant_bits, b))
+                ##print\("...Generated tensor {} \nis representable in bfp with {} mantissa bits as \n{}".format(t, mant_bits, b))
 
     def test_tiled_and_batched(self):
         """
@@ -433,12 +528,12 @@ class TestCases(unittest.TestCase):
                 b=float_to_bfp_tiled(t, mant_bits, epsilon, rounding_mode, device, tile_size , num_format)
                 for tensor_element in b.flatten().tolist():
                     self.assertIn(tensor_element, bfp_numbers, msg="{} is not representable in bfp with {} mantissa bits".format(tensor_element, mant_bits))
-                #print("...Generated tensor {} \nis representable in bfp with {} mantissa bits as \n{}".format(t, mant_bits, b))
+                ##print\("...Generated tensor {} \nis representable in bfp with {} mantissa bits as \n{}".format(t, mant_bits, b))
 
                 b=float_to_bfp_batched(t, mant_bits, epsilon, rounding_mode, device, tile_size , num_format)
                 for tensor_element in b.flatten().tolist():
                     self.assertIn(tensor_element, bfp_numbers, msg="{} is not representable in bfp with {} mantissa bits".format(tensor_element, mant_bits))
-                #print("...Generated tensor {} \nis representable in bfp with {} mantissa bits as \n{}".format(t, mant_bits, b))
+                ##print\("...Generated tensor {} \nis representable in bfp with {} mantissa bits as \n{}".format(t, mant_bits, b))
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
