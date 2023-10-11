@@ -147,7 +147,7 @@ def get_cnn_args():
                         help='path to save checkpoint (default: checkpoint)')
     parser.add_argument('--checkpoint_index', type=str, default=None)
     parser.add_argument('--save_all_models', type=str2bool, default=False)
-    parser.add_argument('--save_some_models', type=str, default='30,60,80')
+    parser.add_argument('--save_some_models', type=str, default='40,80,120,158,159,160')
 
     # device
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'gpu'])
@@ -168,6 +168,12 @@ def get_cnn_args():
                         help='Tile size if using tiled bfp. 0 disables tiling')
     parser.add_argument('--weight_mant_bits', default=0, type=int,
                         help='Mantissa bits for weights bfp')
+    parser.add_argument('--mixed_precision', default='-1,-1', type=str,
+                        help='mixed precision')
+    parser.add_argument('--mixed_tile', default=0, type=int,
+                        help='mixed precision tile size for first and last layers')
+    parser.add_argument('--layer_mant', default=0, type=int,
+                        help='mixed precision mant bits for first and last layers')
 
     # parse args.
     args, unknown = parser.parse_known_args()

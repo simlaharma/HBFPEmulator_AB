@@ -186,13 +186,13 @@ def float_to_bfp_blocked(t, mant_bits, epsilon, rounding_mode, device, bfp_tile_
     intervals=mixed_precision.split(',')
     for i in range(int(len(intervals)/2)):
         if (mixed_tile==1) or (int(intervals[int(2*i)])<int(tracking.current_epoch)<=int(intervals[int(2*i)+1])):
-            #print('...................................')
+            print('...................................')
             mant_bits = 5
 
     if sgd_update:
         mant_bits = weight_mant_bits
 
-    #print(f'in bfp: {mant_bits} tile- {bfp_tile_size}')
+    print(f'in bfp: {mant_bits} tile- {mixed_tile} tracking: {tracking.current_epoch} mixed: {intervals}')
     orig_shape = t.shape
     #block_size = bfp_tile_size**2
     block_size = bfp_tile_size
