@@ -29,7 +29,7 @@
 
 import torch
 #from bfp.bfp_ops import float_to_bfp_tiled, unpack_bfp_args
-from bfp_ops0 import float_to_bfp_blocked, unpack_bfp_args
+from bfp_ops import float_to_bfp_blocked, unpack_bfp_args
 
 required=object()
 
